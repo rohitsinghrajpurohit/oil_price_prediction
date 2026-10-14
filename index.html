@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Oil Price Prediction</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<style>
+  :root { --bg:#f5f6fa; --card:#fff; --text:#1f2430; --muted:#6b7280; --accent:#d97706; --blue:#2563eb; --border:#e5e7eb; --good:#15803d; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14161c; --card:#1e212a; --text:#e8eaf0; --muted:#9aa1b0; --accent:#f59e0b; --blue:#60a5fa; --border:#2c303b; --good:#4ade80; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:18px 24px; border-bottom:1px solid var(--border); background:var(--card); }
+  header h1 { margin:0; font-size:22px; }
+  header p { margin:4px 0 0; color:var(--muted); font-size:13px; }
+  main { max-width:1100px; margin:22px auto; padding:0 16px; display:grid; gap:18px; grid-template-columns:1fr 1fr; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:18px; }
+  .full { grid-column:1 / -1; }
+  h2 { margin:0 0 12px; font-size:17px; }
+  .tiles { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
+  .tile { background:var(--bg); border-radius:10px; padding:12px; }
+  .tile span { font-size:12px; color:var(--muted); display:block; }
+  .tile b { font-size:22px; }
+  .chart-box { position:relative; height:290px; }
+  label { display:block; font-size:13px; color:var(--muted); margin:8px 0 4px; }
+  input[type=number] { width:100%; padding:8px 10px; border-radius:8px; border:1px solid var(--border); background:var(--bg); color:var(--text); }
+  input[type=range] { width:100%; }
+  .row5 { display:grid; grid-template-columns:repeat(5,1fr); gap:8px; }
+  button { margin-top:14px; padding:10px 18px; border:0; border-radius:8px; background:var(--accent); color:#fff; font-weight:600; cursor:pointer; }
+  #result { margin-top:14px; font-size:18px; font-weight:600; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:right; padding:8px 6px; border-bottom:1px solid var(--border); }
+  th:first-child, td:first-child { text-align:left; }
+  th { color:var(--muted); font-weight:500; font-size:12px; }
+  tr.best td:first-child { color:var(--good); font-weight:600; }
+  .note { font-size:13px; color:var(--muted); margin:12px 0 0; line-height:1.5; }
+  .scroll { max-height:200px; overflow-y:auto; margin-top:10px; }
+  .up { color:var(--good); } .down { color:#dc2626; }
+  @media (max-width:760px) { main { grid-template-columns:1fr; } .tiles { grid-template-columns:repeat(2,1fr); } .table-wrap { overflow-x:auto; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>🛢️ Oil Price Prediction</h1>
+  <p>{{ stats.days }} trading days ka data ({{ stats.start }} se {{ stats.latest_date }} tak) • Educational project, financial advice nahi</p>
+</header>
+<main>
+  <section class="card full">
+    <div class="tiles">
+      <div class="tile"><span>Latest price ({{ stats.latest_date }})</span><b>{{ "%.2f"|format(stats.latest) }}</b></div>
+      <div class="tile"><span>Period high</span><b>{{ "%.2f"|format(stats.high) }}</b></div>
+      <div class="tile"><span>Period low</span><b>{{ "%.2f"|format(stats.low) }}</b></div>
+      <div class="tile"><span>Average price</span><b>{{ "%.2f"|format(stats.avg) }}</b></div>
+    </div>
+  </section>
+
+  <section class="card full">
+    <h2>Price history</h2>
+    <div class="chart-box"><canvas id="hChart"></canvas></div>
+  </section>
+
+  <section class="card full">
+    <h2>Future forecast: <span id="dLabel">7</span> trading days</h2>
+    <input type="range" id="days" min="1" max="30" value="7" oninput="dLabel.textContent=this.value" onchange="loadForecast()">
+    <div class="chart-box"><canvas id="fChart"></canvas></div>
+    <div class="scroll"><table id="fTable"></table></div>
+    <p class="note">Shaded area ≈ 95% range (test data ki error se nikali hai). Jitne zyada din aage, utni zyada uncertainty.</p>
+  </section>
+
+  <section class="card">
+    <h2>Custom prediction</h2>
+    <label>Last 5 closing prices (purani → nayi)</label>
+    <div class="row5">
+      {% for p in last5 %}<input type="number" step="0.01" class="p5" value="{{ p }}">{% endfor %}
+    </div>
+    <button onclick="predict()">Agle din ka price predict karo</button>
+    <div id="result"></div>
+  </section>
+
+  <section class="card">
+    <h2>Model summary</h2>
+    <p style="margin:0 0 8px;font-size:14px">Final model: <b>{{ m.best }}</b></p>
+    <p class="note" style="margin-top:0">Train: {{ m.n_train }} din • Test: {{ m.n_test }} din ({{ m.test_start }} se {{ m.test_end }}). Split time-based hai, yani purane data pe train aur latest data pe test.</p>
+  </section>
+
+  <section class="card full">
+    <h2>Model comparison (test data)</h2>
+    <div class="table-wrap">
+    <table>
+      <tr><th>Model</th><th>CV RMSE</th><th>MAE</th><th>RMSE</th><th>MAPE %</th><th>Direction %</th></tr>
+      {% for r in m.models %}
+      <tr class="{{ 'best' if r.name == m.best else '' }}">
+        <td>{{ r.name }}{% if r.name == m.best %} ✓{% endif %}</td>
+        <td>{{ "%.2f"|format(r.CV_RMSE) }}</td><td>{{ "%.2f"|format(r.MAE) }}</td><td>{{ "%.2f"|format(r.RMSE) }}</td>
+        <td>{{ "%.2f"|format(r.MAPE) }}</td><td>{{ "%.1f"|format(r.Direction) }}</td>
+      </tr>
+      {% endfor %}
+      <tr>
+        <td>{{ m.baseline.name }}</td>
+        <td>{{ "%.2f"|format(m.baseline.CV_RMSE) }}</td><td>{{ "%.2f"|format(m.baseline.MAE) }}</td><td>{{ "%.2f"|format(m.baseline.RMSE) }}</td>
+        <td>{{ "%.2f"|format(m.baseline.MAPE) }}</td><td>-</td>
+      </tr>
+    </table>
+    </div>
+    <p class="note">
+      Best model choose karne ke liye CV RMSE use hua (test data se nahi, taaki leakage na ho).
+      {% if m.baseline.CV_RMSE <= m.models|map(attribute='CV_RMSE')|min %}
+      <b>Dhyan do:</b> sirf 210 din ke data me koi bhi model "kal = aaj" wale simple baseline ko clearly beat nahi kar paya. Oil price random-walk jaisa behave karta hai, to ye normal hai. Zyada data aur features (news, dollar index, inventory) se improve ho sakta hai.
+      {% endif %}
+    </p>
+  </section>
+
+  <section class="card full">
+    <h2>Actual vs Predicted (test period)</h2>
+    <div class="chart-box"><canvas id="pChart"></canvas></div>
+  </section>
+</main>
+
+<script>
+const opts = { maintainAspectRatio:false, interaction:{mode:'index', intersect:false}, scales:{ x:{ ticks:{ maxTicksLimit:10 } } } };
+const line = (label, data, color, extra={}) => ({ label, data, borderColor:color, borderWidth:2, pointRadius:0, tension:0.2, ...extra });
+
+async function loadHistory() {
+  const j = await (await fetch('/api/history')).json();
+  new Chart(hChart, { type:'line', options:opts, data:{ labels:j.labels, datasets:[
+    line('Price', j.price, '#d97706'), line('20-day average', j.ma20, '#2563eb', {borderDash:[5,4]}) ] } });
+}
+
+let fc;
+async function loadForecast() {
+  const j = await (await fetch('/api/forecast?days=' + days.value)).json();
+  const hl = j.history.labels, hv = j.history.values, last = hv[hv.length - 1];
+  const pad = arr => new Array(hl.length - 1).fill(null).concat([last], arr);
+  if (fc) fc.destroy();
+  fc = new Chart(fChart, { type:'line',
+    options:{ ...opts, plugins:{ legend:{ labels:{ filter: i => i.text !== '_lower' } } } },
+    data:{ labels: hl.concat(j.labels), datasets:[
+      line('History', hv, '#2563eb'),
+      line('Forecast', pad(j.values), '#d97706', {borderDash:[5,4]}),
+      line('_lower', pad(j.lower), 'transparent', {borderWidth:0}),
+      line('95% range', pad(j.upper), 'transparent', {borderWidth:0, fill:'-1', backgroundColor:'rgba(217,119,6,0.15)'})
+    ] } });
+  let html = '<tr><th>Date</th><th>Forecast</th><th>Range</th></tr>';
+  j.labels.forEach((d, i) => html += `<tr><td>${d}</td><td>${j.values[i].toFixed(2)}</td><td>${j.lower[i].toFixed(1)} - ${j.upper[i].toFixed(1)}</td></tr>`);
+  fTable.innerHTML = html;
+}
+
+async function predict() {
+  const prices = [...document.querySelectorAll('.p5')].map(e => e.value);
+  const r = await fetch('/api/predict', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({prices}) });
+  const j = await r.json();
+  const el = document.getElementById('result');
+  if (j.error) { el.textContent = 'Error: ' + j.error; return; }
+  const cls = j.change >= 0 ? 'up' : 'down', sign = j.change >= 0 ? '+' : '';
+  el.innerHTML = `Agla price: ${j.prediction} <span class="${cls}">(${sign}${j.change}, ${sign}${j.change_pct}%)</span>`;
+}
+
+async function loadPerf() {
+  const j = await (await fetch('/api/performance')).json();
+  new Chart(pChart, { type:'line', options:opts, data:{ labels:j.labels, datasets:[
+    line('Actual', j.actual, '#2563eb'), line('Predicted', j.predicted, '#d97706', {borderDash:[5,4]}) ] } });
+}
+
+loadHistory(); loadForecast(); loadPerf();
+</script>
+</body>
+</html>
